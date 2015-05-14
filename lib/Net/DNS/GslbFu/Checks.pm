@@ -31,7 +31,6 @@ sub reload {
         require => 1,
     );
 
-    # FIXME? this should probably go in to OIETS::ActionBase, so they magically register themselves
     $self->{plugins} = { map {
         +( do { my $p = __PACKAGE__; my $f = $_; $f =~ s/^${p}:://; $f } => $_->new() )
         } Module::Pluggable::Object->new(%opts)->plugins() };

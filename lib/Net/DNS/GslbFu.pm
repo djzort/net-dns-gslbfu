@@ -8,13 +8,16 @@ package Net::DNS::GslbFu;
 use Config::Any;
 use Net::DNS::GslbFu::Actions;
 use Net::DNS::GslbFu::Checks;
+use Log::Log4perl;
+Log::Log4perl->init('log4perl.conf');
 
+my $log = Log::Log4perl->get_logger(__PACKAGE__);
 my $keeprunning = 1;
 my $reload = 0;
 my $actions;
 my $checks;
 
-$SIG{HUP}  = sub { $reload++; print "Will reload...\n" };
+$SIG{HUP}  = sub { $reload++; $log->info( "Got HUP. Will reload..." ) };
 $SIG{ALRM} = sub { die 'Timeout executing plugin' };
 
 sub loadconfig {
@@ -33,11 +36,11 @@ sub loadconfig {
     for my $name (sort keys %$cfg) {
         my $steps = $cfg->{$name};
 
-        print "Examining config for $name\n";
+        $log->debug( "Examining config for $name" );
 
         for my $step (@$steps) {
 
-            die "No Check defined for $name\n"
+            $log->logdie( "No Check defined for $name" )
                 unless $step->{Check};
 
             # smoosh scalars in to arrayrefs
@@ -48,43 +51,43 @@ sub loadconfig {
                 unless ref $check eq 'ARRAY';
 
             if ($checks->has($check->[0])) {
-                print "Check $check->[0] for $name is AOK\n";
+                $log->debug( "Check $check->[0] for $name is AOK" );
             }
             else {
-                die "Unknown Check $check->[0] for $name\n"
+                $log->logdie( "Unknown Check $check->[0] for $name" )
             }
 
-            print "All Checks fine for $name\n";
+            $log->debug( "All Checks fine for $name" );
 
-            die "No Action defined for $name\n"
+            $log->logdie( "No Action defined for $name" )
                 unless $step->{Action};
 
             # smoosh scalars in to arrayrefs
             my $action = $step->{Action};
-            die "Action for $name must be an array\n"
+            $log->logdie( "Action for $name must be an array" )
                 unless ref $check eq 'ARRAY';
 
             # repack in to an array ref
             unless ( ref $action->[0] ) {
                 @$action = ( [ @$action ] );
             }
-            die "Action for $name must be an array or string\n"
+            $log->logdie( "Action for $name must be an array or string" )
                 unless ref $action->[0] eq 'ARRAY';
 
             for my $c (@$action) {
 
-                die "Action for $name must be a string\n"
+                $log->logdie( "Action for $name must be a string" )
                     if ref $c->[0];
 
                 if ($actions->has($c->[0])) {
-                    printf "Action %s for %s is AOK\n", $c->[0], $name;
+                    $log->debug( sprintf "Action %s for %s is AOK", $c->[0], $name );
                     next
                 }
-                die sprintf "Unknown Action %s for %s\n", $c->[0], $name;
+                $log->logdie( sprintf "Unknown Action %s for %s", $c->[0], $name );
 
             }
 
-            print "All Actions fine for $name\n";
+            $log->info( "All Actions fine for $name" );
 
         }
 
@@ -104,19 +107,19 @@ sub run {
 
     # load config
     my $cfg = loadconfig( $args->{configfile} );
-    use Data::Dumper; print Dumper $cfg;
+    use Data::Dumper; $log->info( Dumper $cfg );
 
     while ($keeprunning) {
 
         if ($reload) {
-            print "re-loading config\n";
+            $log->info( "re-loading config\n" );
             eval {
                 my $newcfg = loadconfig( $args->{configfile} );
                 $cfg = $newcfg;
             };
             if ($@) {
-                print "reload failed, continuing with old config\n";
-                print "error was: " . $@;
+                $log->error( "reload failed, continuing with old config" );
+                $log->error( "error was: " . $@ );
             }
             $reload = 0
         }
@@ -124,21 +127,21 @@ sub run {
         for my $name (sort keys %$cfg) {
             my $steps = $cfg->{$name};
 
-            print "Running $name\n";
+            $log->info( "Running $name" );
 
             STEPS:
             for my $step (@$steps) {
                 my $check = $step->{Check};
 
-                printf "Checking %s...", $check->[0];
+                $log->info( sprintf "Checking %s...", $check->[0] );
                 my $res;
                 alarm(5);
                 eval { $res = $checks->run(@$check) };
                 alarm(0);
 
                 if ( $res ) {
-                    print "Pass\n";
-                    print "Running Action...\n";
+                    $log->info( "Pass" );
+                    $log->info( "Running Action..." );
 
                     for my $action (@{$step->{Action}}) {
                         alarm(5);
@@ -148,21 +151,21 @@ sub run {
                         alarm(0);
                     }
 
-                    print "Done with $name\n";
+                    $log->info( "Done with $name" );
                     last STEPS
                 }
 
-                print "Fail\n";
-                print "Running further Checks\n";
+                $log->info( "Fail" );
+                $log->info( "Running further Checks" );
 
             }
 
-            print "Completed $name... for now.\n";
+            $log->info( "Completed $name... for now." );
 
         }
 
         my $pause = 5;
-        print "Sleeping for $pause\n";
+        $log->info( "Sleeping for $pause" );
         sleep($pause) if $pause > 0;
 
     }
