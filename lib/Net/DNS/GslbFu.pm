@@ -11,20 +11,21 @@ use Net::DNS::GslbFu::Checks;
 
 my $keeprunning = 1;
 my $reload = 0;
-$SIG{HUP} = sub { $reload++ };
+my $actions;
+my $checks;
 
-sub run {
+$SIG{HUP}  = sub { $reload++; print "Will reload...\n" };
+$SIG{ALRM} = sub { die 'Timeout executing plugin' };
 
-    my $args = $_[1];
+sub loadconfig {
 
-    # load up
-    my $actions = Net::DNS::GslbFu::Actions->new();
-    my $checks = Net::DNS::GslbFu::Checks->new();
+    my $file = shift;
 
-    # load config
-    my $cfg = Config::Any->load_files(
-        { files => [ $args->{configfile} ],
-        use_ext => 1, flatten_to_hash => 1 });
+    my $cfg = Config::Any->load_files({
+        files => [ $file ],
+        use_ext => 1,
+        flatten_to_hash => 1
+    });
 
     # remove the file.name => {} outter
     $cfg = do { $cfg->{(keys %$cfg)[0]} };
@@ -89,14 +90,34 @@ sub run {
 
     }
 
+    return $cfg
+
+}
+
+sub run {
+
+    my $args = $_[1];
+
+    # load up
+    $actions = Net::DNS::GslbFu::Actions->new();
+    $checks  = Net::DNS::GslbFu::Checks->new();
+
+    # load config
+    my $cfg = loadconfig( $args->{configfile} );
     use Data::Dumper; print Dumper $cfg;
 
     while ($keeprunning) {
 
         if ($reload) {
-            print "re-loading checks and actions\n";
-            $actions->reload();
-            $checks->reload();
+            print "re-loading config\n";
+            eval {
+                my $newcfg = loadconfig( $args->{configfile} );
+                $cfg = $newcfg;
+            };
+            if ($@) {
+                print "reload failed, continuing with old config\n";
+                print "error was: " . $@;
+            }
             $reload = 0
         }
 
@@ -110,13 +131,21 @@ sub run {
                 my $check = $step->{Check};
 
                 printf "Checking %s...", $check->[0];
-                my $res = $checks->run(@$check);
+                my $res;
+                alarm(5);
+                eval { $res = $checks->run(@$check) };
+                alarm(0);
+
                 if ( $res ) {
                     print "Pass\n";
                     print "Running Action...\n";
 
                     for my $action (@{$step->{Action}}) {
-                        $actions->run(@$action)
+                        alarm(5);
+                        eval {
+                            $actions->run(@$action)
+                        };
+                        alarm(0);
                     }
 
                     print "Done with $name\n";
@@ -133,6 +162,7 @@ sub run {
         }
 
         my $pause = 5;
+        print "Sleeping for $pause\n";
         sleep($pause) if $pause > 0;
 
     }
