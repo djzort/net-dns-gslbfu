@@ -138,6 +138,9 @@ sub run {
                 alarm(5);
                 eval { $res = $checks->run(@$check) };
                 alarm(0);
+                if ($@) {
+                    $log->info('Eval failed with: ' . $@)
+                }
 
                 if ( $res ) {
                     $log->info( "Pass" );
