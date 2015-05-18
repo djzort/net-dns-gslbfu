@@ -54,7 +54,7 @@ $opts->{ttl} )
     $self->log->debug(sprintf 'Status %d', $response->{status});
     $self->log->debug(Dumper $response);
 
-    $response->{success} ? 1 : 0;
+    return $response->{success} ? 1 : 0;
 
 }
 
