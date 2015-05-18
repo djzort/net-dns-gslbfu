@@ -152,6 +152,9 @@ sub run {
                             $actions->run(@$action)
                         };
                         alarm(0);
+                        if ($@) {
+                            $log->info('Eval failed with: ' . $@)
+                        }
                     }
 
                     $log->info( "Done with $name" );

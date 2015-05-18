@@ -13,7 +13,7 @@
                     nameserver => 'saito.fragfest.com.au',
                     domain  => 'bong.com.au',
                     name    => 'thisistest.bong.com.au',
-                    ttl     => 86400,
+                    ttl     => 7200,
                     type    => 'A',
                     content => '192.0.5.4'
                 }
