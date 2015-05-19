@@ -5,6 +5,7 @@ use warnings;
 
 package Net::DNS::GslbFu;
 
+use CHI;
 use Config::Any;
 use Net::DNS::GslbFu::Actions;
 use Net::DNS::GslbFu::Checks;
@@ -16,6 +17,7 @@ my $keeprunning = 1;
 my $reload = 0;
 my $actions;
 my $checks;
+my $chi;
 
 $SIG{HUP}  = sub { $reload++; $log->info( "Got HUP. Will reload..." ) };
 $SIG{ALRM} = sub { die 'Timeout executing plugin' };
@@ -25,7 +27,7 @@ sub loadconfig {
     my $file = shift;
 
     my $cfg = Config::Any->load_files({
-        files => [ $file ],
+        files   => [ $file ],
         use_ext => 1,
         flatten_to_hash => 1
     });
@@ -33,64 +35,94 @@ sub loadconfig {
     # remove the file.name => {} outter
     $cfg = do { $cfg->{(keys %$cfg)[0]} };
 
+    my %provide;
+    my %trigger;
+
+    my %stuff = (
+        Actions => 'ARRAY', Checks => 'ARRAY', Store => 'HASH' );
+
+    for my $name (sort keys %stuff) {
+        $log->logdie( sprintf('No %s in config file', $name) )
+            unless $cfg->{$name};
+        $log->logdie( sprintf('Key %s not a hashref', $name) )
+            unless ref $cfg->{$name} eq $stuff{$name};
+    }
+
     for my $name (sort keys %$cfg) {
-        my $steps = $cfg->{$name};
+        $log->logdie( sprintf('Unknown key %s in config', $name) )
+            unless $stuff{$name};
+    }
 
-        $log->debug( "Examining config for $name" );
+    $log->logdie('No Checks defined?')
+        unless @{$cfg->{Checks}};
 
-        for my $step (@$steps) {
+    for my $foo (@{$cfg->{Checks}}) {
 
-            $log->logdie( "No Check defined for $name" )
-                unless $step->{Check};
+        $log->logdie('Everything in Actions has to be a hashref')
+            unless ref $foo eq 'HASH';
 
-            # smoosh scalars in to arrayrefs
-            my $check = $step->{Check};
-            $step->{Check} = $check = [$check]
-                unless ref $check;
-            die "Check for $name must be an array or string\n"
-                unless ref $check eq 'ARRAY';
+        $log->logdie('Check name missing')
+            unless $foo->{Check};
 
-            if ($checks->has($check->[0])) {
-                $log->debug( "Check $check->[0] for $name is AOK" );
-            }
-            else {
-                $log->logdie( "Unknown Check $check->[0] for $name" )
-            }
+        $log->logdie('Check must be a string')
+            if ref $foo->{Check};
 
-            $log->debug( "All Checks fine for $name" );
+        $log->logdie( sprintf 'Check %s not registered', $foo->{Check} )
+            unless $checks->has($foo->{Check});
 
-            $log->logdie( "No Action defined for $name" )
-                unless $step->{Action};
+        $log->logdie('Provide name missing')
+            unless $foo->{Provide};
 
-            # smoosh scalars in to arrayrefs
-            my $action = $step->{Action};
-            $log->logdie( "Action for $name must be an array" )
-                unless ref $check eq 'ARRAY';
+        $log->logdie('Provide must be a string')
+            if ref $foo->{Provide};
 
-            # repack in to an array ref
-            unless ( ref $action->[0] ) {
-                @$action = ( [ @$action ] );
-            }
-            $log->logdie( "Action for $name must be an array or string" )
-                unless ref $action->[0] eq 'ARRAY';
+        $log->logdie( sprintf(
+            'Provide %s is duplicate', $foo->{Provide}) )
+            if $provide{$foo->{Provide}}++
 
-            for my $c (@$action) {
+        ## TODO have each plugin validate its own config
 
-                $log->logdie( "Action for $name must be a string" )
-                    if ref $c->[0];
+    }
 
-                if ($actions->has($c->[0])) {
-                    $log->debug( sprintf "Action %s for %s is AOK", $c->[0], $name );
-                    next
-                }
-                $log->logdie( sprintf "Unknown Action %s for %s", $c->[0], $name );
+    $log->debug( 'All Checks seem fine' );
 
-            }
+    $log->logdie('No Actions defined?')
+        unless @{$cfg->{Actions}};
 
-            $log->info( "All Actions fine for $name" );
+    for my $foo (@{$cfg->{Actions}}) {
+        $log->logdie('Everything in Actions has to be a hashref')
+            unless ref $foo eq 'HASH';
 
-        }
+        $log->logdie('Action name missing')
+            unless $foo->{Action};
 
+        $log->logdie('Action must be a string')
+            if ref $foo->{Action};
+
+        $log->logdie(sprintf 'Action %s not registered', $foo->{Action})
+            unless $actions->has($foo->{Action});
+
+        $log->logdie('Trigger name missing')
+            unless $foo->{Trigger};
+
+        $log->logdie('Trigger must be a string')
+            if ref $foo->{Trigger};
+
+        $log->logdie( sprintf(
+            'Nothing Provide for Trigger %s', $foo->{Trigger}) )
+            unless $provide{$foo->{Trigger}};
+
+        $trigger{$foo->{Trigger}} = 1;
+
+        ## TODO have each plugin validate its own config
+
+    }
+
+    $log->debug( 'All Actions seem fine' );
+
+    for my $p (sort keys %provide) {
+        next if $trigger{$p};
+        $log->warn( sprintf 'Provider %s doesnt Trigger anything?', $p);
     }
 
     return $cfg
@@ -102,73 +134,149 @@ sub run {
     my $args = $_[1];
 
     # load up
-    $actions = Net::DNS::GslbFu::Actions->new();
     $checks  = Net::DNS::GslbFu::Checks->new();
+    $actions = Net::DNS::GslbFu::Actions->new();
 
     # load config
     my $cfg = loadconfig( $args->{configfile} );
-    use Data::Dumper; $log->info( Dumper $cfg );
+
+    $chi = CHI->new(%{$cfg->{Store}});
 
     while ($keeprunning) {
 
         if ($reload) {
-            $log->info( "re-loading config\n" );
+            $log->info( 'Reloading config' );
             eval {
                 my $newcfg = loadconfig( $args->{configfile} );
                 $cfg = $newcfg;
             };
             if ($@) {
-                $log->error( "reload failed, continuing with old config" );
-                $log->error( "error was: " . $@ );
+                $log->error( 'Reload failed, continuing with old config' );
+                $log->error( 'Reload error was: ' . $@ );
+            }
+            else {
+                $chi = CHI->new(%{$cfg->{Store}});
             }
             $reload = 0
         }
 
-        for my $name (sort keys %$cfg) {
-            my $steps = $cfg->{$name};
+        $log->info( 'Running Checks' );
 
-            $log->info( "Running $name" );
+        CHECKS:
+        for my $c (@{$cfg->{Checks}}) {
 
-            STEPS:
-            for my $step (@$steps) {
-                my $check = $step->{Check};
-
-                $log->info( sprintf "Checking %s...", $check->[0] );
-                my $res;
-                alarm(5);
-                eval { $res = $checks->run(@$check) };
-                alarm(0);
-                if ($@) {
-                    $log->info('Eval failed with: ' . $@)
-                }
-
-                if ( $res ) {
-                    $log->info( "Pass" );
-                    $log->info( "Running Action..." );
-
-                    for my $action (@{$step->{Action}}) {
-                        alarm(5);
-                        eval {
-                            $actions->run(@$action)
-                        };
-                        alarm(0);
-                        if ($@) {
-                            $log->info('Eval failed with: ' . $@)
-                        }
-                    }
-
-                    $log->info( "Done with $name" );
-                    last STEPS
-                }
-
-                $log->info( "Fail" );
-                $log->info( "Running further Checks" );
-
+            $log->debug( sprintf 'Checking %s...', $c->{Provide} );
+            my $res;
+            alarm(5);
+            eval {
+                $res = $checks->run(
+                    $c->{Check}, %$c, cache => $chi)
+            };
+            alarm(0);
+            if ($@) {
+                $log->warn(sprintf 'Eval failed for %s with: %s',
+                    $c->{Provide}, $@)
             }
 
-            $log->info( "Completed $name... for now." );
+            if ( $res ) {
+                $log->debug( sprintf '%s Pass', $c->{Provide} );
+                $chi->set($c->{Provide} => 1);
+            }
+            else {
+                $log->debug( sprintf '%s Fail', $c->{Provide} );
+                $chi->set($c->{Provide} => 0);
+            }
+            $log->debug( sprintf 'Done with %s', $c->{Provide} );
 
         }
+
+        $log->info( 'Finished Checks' );
+
+        $log->debug( 'Values in cache: '
+            . join( ', ',
+                map { sprintf '%s=%s', $_, $chi->get($_) }
+                    $chi->get_keys() ) );
+
+        $log->info( 'Running Actions' );
+
+        ACTIONS:
+        for my $c (@{$cfg->{Actions}}) {
+
+            $log->debug( sprintf 'Processing %s on Trigger %s...',
+                            $c->{Action}, $c->{Trigger} );
+
+            if ($chi->get($c->{Trigger})) {
+
+                $log->debug( 'Taking Action' );
+
+                my $res;
+                alarm(5);
+                eval {
+                    $res = $actions->run( $c->{Action}, %$c )
+                };
+                alarm(0);
+                if ($@) {
+                    $log->warn(
+                        sprintf 'Eval failed for %s on Trigger %s: %s',
+                        $c->{Action}, $c->{Trigger}, $@)
+                }
+
+            }
+            else {
+
+                $log->debug( 'Action not taken' )
+
+            }
+            $log->debug( sprintf 'Done with %s on Trigger %s...',
+                            $c->{Action}, $c->{Trigger} );
+
+        }
+
+        $log->info( 'Finished Actions' );
+
+        #~ for my $name (sort keys %$cfg) {
+            #~ my $steps = $cfg->{$name};
+
+            #~ STEPS:
+            #~ for my $step (@$steps) {
+                #~ my $check = $step->{Check};
+#~
+                #~ $log->info( sprintf "Checking %s...", $check->[0] );
+                #~ my $res;
+                #~ alarm(5);
+                #~ eval { $res = $checks->run(@$check) };
+                #~ alarm(0);
+                #~ if ($@) {
+                    #~ $log->info('Eval failed with: ' . $@)
+                #~ }
+#~
+                #~ if ( $res ) {
+                    #~ $log->info( "Pass" );
+                    #~ $log->info( "Running Action..." );
+#~
+                    #~ for my $action (@{$step->{Action}}) {
+                        #~ alarm(5);
+                        #~ eval {
+                            #~ $actions->run(@$action)
+                        #~ };
+                        #~ alarm(0);
+                        #~ if ($@) {
+                            #~ $log->info('Eval failed with: ' . $@)
+                        #~ }
+                    #~ }
+#~
+                    #~ $log->info( "Done with $name" );
+                    #~ last STEPS
+                #~ }
+#~
+                #~ $log->info( "Fail" );
+                #~ $log->info( "Running further Checks" );
+#~
+            #~ }
+#~
+            #~ $log->info( "Completed $name... for now." );
+#~
+        #~ }
 
         my $pause = 5;
         $log->info( "Sleeping for $pause" );

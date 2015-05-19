@@ -5,9 +5,11 @@ use warnings;
 
 package Net::DNS::GslbFu::Actions;
 
+use Log::Log4perl;
 use Module::Pluggable::Object;
-use Data::Dumper;
 #use namespace::autoclean;
+
+my $log = Log::Log4perl->get_logger(__PACKAGE__);
 
 sub new {
 
@@ -31,13 +33,14 @@ sub reload {
         require => 1,
     );
 
+    $log->debug( 'Loading Actons...' );
+
     $self->{plugins} = { map {
         +( do { my $p = __PACKAGE__; my $f = $_; $f =~ s/^${p}:://; $f } => $_->new() )
         } Module::Pluggable::Object->new(%opts)->plugins() };
-#    register_plugin $_ for @plugins;
-#    $_->register for @plugins;
 
-    print Dumper $self->{plugins};
+    $log->debug( 'Loaded Actions: '
+                . join ', ', keys %{$self->{plugins}});
 
 }
 
@@ -47,12 +50,12 @@ sub run {
 
     my $self = shift;
     my $plugin = shift;
-    my $args = shift;
+    my @args = @_;
 
     die 'Cannot run an unnamed action plugin?' unless $plugin;
     die 'Unknown action plugin: ' , $plugin unless $self->has($plugin);
 
-    return $self->{plugins}->{ $plugin }->run( $args )
+    return $self->{plugins}->{ $plugin }->run( @args )
 
 }
 

@@ -14,7 +14,8 @@ my $http = HTTP::Tiny->new();
 sub run {
 
     my $self = shift;
-    my $url = shift;
+    my %args = @_;
+    my $url = $args{url};
 
     $self->log->debug(sprintf 'Trying %s', $url);
 
@@ -22,7 +23,7 @@ sub run {
 
     $self->log->debug(sprintf 'Status %d', $response->{status});
 
-    $response->{success} ? 1 : 0;
+    return $response->{success} ? 1 : 0;
 
 }
 

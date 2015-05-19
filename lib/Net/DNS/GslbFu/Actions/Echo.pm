@@ -10,7 +10,8 @@ use parent qw/ Net::DNS::GslbFu::ActionsBase /;
 sub run {
 
     my $self = shift;
-    print 'ECHO: ', @_, "\n";
+    my %args = @_;
+    print 'ECHO: ', $args{message}, "\n";
     return 1
 
 }
